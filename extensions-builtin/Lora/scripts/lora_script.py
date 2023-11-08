@@ -1,7 +1,7 @@
 import re
 
 import gradio as gr
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 
 import network
 import networks
@@ -64,6 +64,16 @@ def api_networks(_: gr.Blocks, app: FastAPI):
     @app.post("/sdapi/v1/refresh-loras")
     async def refresh_loras():
         return networks.list_available_networks()
+    
+    # Upload Lora file
+    @app.post("/sdapi/v1/upload_lora")
+    async def upload_lora(file: UploadFile):
+        filename = networks.save_lora_file(file)  
+        networks.list_available_networks()
+        return {
+            "filename": filename,
+            "networks": [create_lora_json(n) for n in networks.available_networks.values()]
+        }
 
 
 script_callbacks.on_app_started(api_networks)

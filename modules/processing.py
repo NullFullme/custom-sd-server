@@ -13,7 +13,7 @@ from PIL import Image, ImageOps
 import random
 import cv2
 from skimage import exposure
-from typing import Any
+from typing import Any, Dict, List
 
 import modules.sd_hijack
 from modules import devices, prompt_parser, masking, sd_samplers, lowvram, generation_parameters_copypaste, extra_networks, sd_vae_approx, scripts, sd_samplers_common, sd_unet, errors, rng
@@ -1007,9 +1007,11 @@ def old_hires_fix_first_pass_dimensions(width, height):
 
     return width, height
 
-
+### change init args
 @dataclass(repr=False)
 class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
+    sd_model_checkpoint: str= None
+    id_task: str =None
     enable_hr: bool = False
     denoising_strength: float = 0.75
     firstphase_width: int = 0
@@ -1341,9 +1343,11 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
 
         return res
 
-
+### change init args
 @dataclass(repr=False)
 class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
+    sd_model_checkpoint: str= None
+    id_task: str =None
     init_images: list = None
     resize_mode: int = 0
     denoising_strength: float = 0.75

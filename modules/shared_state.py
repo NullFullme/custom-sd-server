@@ -76,8 +76,14 @@ class State:
         log.info("Received skip request")
 
     def interrupt(self):
+    # def interrupt(self, id_task=''):
         self.interrupted = True
         log.info("Received interrupt request")
+
+        # if id_task!= '' and state.task_status.get(id_task) == "interrupted":
+        #     return
+        # if id_task != '':
+        #     state.task_status[id_task] = "interrupted"
 
     def nextjob(self):
         if shared.opts.live_previews_enable and shared.opts.show_progress_every_n_steps == -1:

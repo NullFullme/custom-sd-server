@@ -491,6 +491,40 @@ def network_MultiheadAttention_load_state_dict(self, *args, **kwargs):
 
     return originals.MultiheadAttention_load_state_dict(self, *args, **kwargs)
 
+from fastapi import UploadFile
+# Save Lora file
+def save_lora_file(file: UploadFile):
+    os.makedirs(shared.cmd_opts.lora_dir, exist_ok=True)
+    lora_dir = os.path.join(shared.cmd_opts.lora_dir, 'Lora')
+    filename = file.filename
+    file_path = lora_dir + filename
+
+    # if file exists 
+    # if os.path.exists(file_path):
+    #     filename = increment_filename(file_path)
+    #     file_path = os.path.join(lora_dir, filename)
+    
+    with open(file_path, "wb") as f:
+        f.write(file.file.read())
+
+    return filename
+# file exists handler
+def increment_filename(filepath):
+    filename = os.path.basename(filepath)
+    name, ext = os.path.splitext(filename)
+    
+    # 提取文件名中的数字部分
+    matches = re.findall(r'\d+$', name)
+    if matches:
+        num = int(matches[-1])
+        name = name[:(-len(matches[-1]))]
+    else:
+        num = 1
+    
+    # 构造新文件名    
+    new_name = f"{name}_{num:03d}{ext}"
+    
+    return new_name
 
 def list_available_networks():
     available_networks.clear()

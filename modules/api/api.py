@@ -12,19 +12,19 @@ from io import BytesIO
 from fastapi import APIRouter, Depends, FastAPI, Request, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.exceptions import HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.encoders import jsonable_encoder
 from secrets import compare_digest
 
 import modules.shared as shared
-from modules import sd_samplers, deepbooru, sd_hijack, images, scripts, ui, postprocessing, errors, restart, shared_items
+from modules import sd_samplers, deepbooru, sd_hijack, images, scripts, ui, postprocessing, errors, restart, shared_items, progress
 from modules.api import models
 from modules.shared import opts
 from modules.processing import StableDiffusionProcessingTxt2Img, StableDiffusionProcessingImg2Img, process_images
 from modules.textual_inversion.textual_inversion import create_embedding, train_embedding
 from modules.textual_inversion.preprocess import preprocess
 from modules.hypernetworks.hypernetwork import create_hypernetwork, train_hypernetwork
-from PIL import PngImagePlugin,Image
+from PIL import PngImagePlugin,Image,ExifTags
 from modules.sd_models import unload_model_weights, reload_model_weights, checkpoint_aliases
 from modules.sd_models_config import find_checkpoint_config_near_filename
 from modules.realesrgan_model import get_realesrgan_models
@@ -76,6 +76,22 @@ def verify_url(url):
     return True
 
 
+def verify_image(image):
+    for orientation in ExifTags.TAGS.keys():
+        if ExifTags.TAGS[orientation] == 'Orientation':
+            try:
+                exif = dict(image._getexif().items())
+                if exif[orientation] == 3:
+                    image = image.rotate(180, expand=True)
+                elif exif[orientation] == 6:
+                    image = image.rotate(270, expand=True)
+                elif exif[orientation] == 8:
+                    image = image.rotate(90, expand=True)
+            except (AttributeError, KeyError, IndexError):
+                # 图像没有EXIF信息或者EXIF中没有方向信息
+                pass
+    return image
+
 def decode_base64_to_image(encoding):
     if encoding.startswith("http://") or encoding.startswith("https://"):
         if not opts.api_enable_requests:
@@ -88,6 +104,7 @@ def decode_base64_to_image(encoding):
         response = requests.get(encoding, timeout=30, headers=headers)
         try:
             image = Image.open(BytesIO(response.content))
+            image = verify_image(image)
             return image
         except Exception as e:
             raise HTTPException(status_code=500, detail="Invalid image url") from e
@@ -96,10 +113,31 @@ def decode_base64_to_image(encoding):
         encoding = encoding.split(";")[1].split(",")[1]
     try:
         image = Image.open(BytesIO(base64.b64decode(encoding)))
+        image = verify_image(image)
         return image
     except Exception as e:
         raise HTTPException(status_code=500, detail="Invalid encoded image") from e
 
+def save_img_in_outputs_directory(source, im_list, name):
+    import random
+    from datetime import datetime
+    import random
+    current_time = datetime.now().strftime("%Y-%m-%d")
+    print("api call in webui, save png")
+    print(current_time)
+    outputs_base_dir = 'outputs'
+    os.makedirs(outputs_base_dir, exist_ok=True)
+    source_dir = f"{outputs_base_dir}/{source}"
+    os.makedirs(source_dir, exist_ok=True)
+    date_dir = f"{outputs_base_dir}/{source}/{current_time}"
+    os.makedirs(date_dir, exist_ok=True)
+    for im in im_list:
+        random_str = str(random.random())
+        file_name = f"{name}-resized-{current_time}-{random_str}.png"
+        save_path = os.path.join(date_dir, file_name)
+        print(f'Saving preprocessed image to {save_path}')
+        im.save(save_path)
+        print(im)
 
 def encode_pil_to_base64(image):
     with io.BytesIO() as output_bytes:
@@ -131,6 +169,64 @@ def encode_pil_to_base64(image):
         bytes_data = output_bytes.getvalue()
 
     return base64.b64encode(bytes_data)
+
+"""
+使用 get_browser_path 函数可获取对应名称的浏览器的安装位置，使用 open_url 函数可直接使用指定的浏览器打开对应页面，
+可同时指定多个浏览器，优先级从前到后。当前支持 'IE'，'chrome'，'edge'，'firefox'，'360' 等浏览器，如果有其他浏览器需要支持，只需在 _browser_regs 中补充对应注册表信息即可
+"""
+import webbrowser
+import winreg
+# 浏览器注册表信息
+_browser_regs = {
+    'IE': r"SOFTWARE\Clients\StartMenuInternet\IEXPLORE.EXE\DefaultIcon",
+    'chrome': r"SOFTWARE\Clients\StartMenuInternet\Google Chrome\DefaultIcon",
+    'edge': r"SOFTWARE\Clients\StartMenuInternet\Microsoft Edge\DefaultIcon",
+    'firefox': r"SOFTWARE\Clients\StartMenuInternet\FIREFOX.EXE\DefaultIcon",
+    '360': r"SOFTWARE\Clients\StartMenuInternet\360Chrome\DefaultIcon",
+}
+
+def get_browser_path(browser):
+    """
+    获取浏览器的安装路径
+
+    :param browser: 浏览器名称
+    """
+    try:
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _browser_regs[browser])
+    except FileNotFoundError:
+        return None
+    value, _type = winreg.QueryValueEx(key, "")
+    return value.split(',')[0]
+
+
+def open_url(url, browsers=('IE',)):
+    """
+    使用指定的浏览器打开url对应的网页地址
+
+    :param url: 网页地址
+    :param browsers: 浏览器名称列表
+    :return: 是否打开成功
+    """
+    for browser in browsers:
+        path = get_browser_path(browser)
+        if path:
+            print(f'open with browser: `{browser}`, path: `{path}`')
+            webbrowser.register(browser, None, webbrowser.BackgroundBrowser(path))
+            webbrowser.get(browser).open(url)
+        return True
+    return False
+
+def select_browser_all(url: str):
+    print("IE:", get_browser_path('IE'))
+    print("谷歌:", get_browser_path('chrome'))
+    print("edge: ", get_browser_path('edge'))
+    print("火狐:", get_browser_path('firefox'))
+    print("360: ", get_browser_path('360'))
+
+    if open_url(url, browsers=('chrome', 'firefox', 'edge', 'IE')):
+        print('打开成功')
+    else:
+        print('打开失败，请安装 Chrome 或 Firefox 浏览器后重试')
 
 
 def api_middleware(app: FastAPI):
@@ -195,6 +291,14 @@ def api_middleware(app: FastAPI):
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, e: HTTPException):
         return handle_exception(request, e)
+    
+    @app.on_event("startup")
+    async def startup_event():
+        import webbrowser
+        print("open brower")
+        # webbrowser.open('http://127.0.0.1:7789')
+        url = 'http://127.0.0.1:7789'
+        select_browser_all(url)
 
 
 class Api:
@@ -209,12 +313,26 @@ class Api:
         self.app = app
         self.queue_lock = queue_lock
         api_middleware(self.app)
+
+        from fastapi.staticfiles import StaticFiles
+        from starlette.templating import Jinja2Templates
+        from pathlib import Path
+        # 项目根目录
+        base_dir = Path(__file__).absolute().parent.parent.parent
+        print("------------base_dir:",base_dir)
+        static_dir = base_dir / 'static'
+        app.mount("/static", StaticFiles(directory=static_dir.as_posix()), name="static")
+        self.home_templates = Jinja2Templates(directory=static_dir.as_posix())
+        self.add_api_route("/", self.home, methods=["GET"], response_class=HTMLResponse)
+
         self.add_api_route("/sdapi/v1/txt2img", self.text2imgapi, methods=["POST"], response_model=models.TextToImageResponse)
         self.add_api_route("/sdapi/v1/img2img", self.img2imgapi, methods=["POST"], response_model=models.ImageToImageResponse)
         self.add_api_route("/sdapi/v1/extra-single-image", self.extras_single_image_api, methods=["POST"], response_model=models.ExtrasSingleImageResponse)
         self.add_api_route("/sdapi/v1/extra-batch-images", self.extras_batch_images_api, methods=["POST"], response_model=models.ExtrasBatchImagesResponse)
         self.add_api_route("/sdapi/v1/png-info", self.pnginfoapi, methods=["POST"], response_model=models.PNGInfoResponse)
-        self.add_api_route("/sdapi/v1/progress", self.progressapi, methods=["GET"], response_model=models.ProgressResponse)
+         # Get change to Post
+        self.add_api_route("/sdapi/v1/progress", self.progressapi, methods=["POST"], response_model=models.ProgressResponse)
+        # self.add_api_route("/sdapi/v1/progress", self.progressapi, methods=["GET"], response_model=models.ProgressResponse)
         self.add_api_route("/sdapi/v1/interrogate", self.interrogateapi, methods=["POST"])
         self.add_api_route("/sdapi/v1/interrupt", self.interruptapi, methods=["POST"])
         self.add_api_route("/sdapi/v1/skip", self.skip, methods=["POST"])
@@ -252,6 +370,11 @@ class Api:
         self.default_script_arg_txt2img = []
         self.default_script_arg_img2img = []
 
+    async def home(self, request: Request):
+        context = {'request': request}
+        return self.home_templates.TemplateResponse("index.html",context=context)
+
+    
     def add_api_route(self, path: str, endpoint, **kwargs):
         if shared.cmd_opts.api_auth:
             return self.app.add_api_route(path, endpoint, dependencies=[Depends(self.auth)], **kwargs)
@@ -336,7 +459,13 @@ class Api:
                         script_args[alwayson_script.args_from + idx] = request.alwayson_scripts[alwayson_script_name]["args"][idx]
         return script_args
 
+    ### change text2imgapi logic
     def text2imgapi(self, txt2imgreq: models.StableDiffusionTxt2ImgProcessingAPI):
+        ### add progress
+        id_task = txt2imgreq.id_task   #获取id_task
+        sd_model_checkpoint = txt2imgreq.sd_model_checkpoint   # 获取模型名称
+        progress.add_task_to_queue(id_task)   #添加id_task到任务列队
+        ###
         script_runner = scripts.scripts_txt2img
         if not script_runner.scripts:
             script_runner.initialize_scripts(False)
@@ -364,6 +493,14 @@ class Api:
         args.pop('save_images', None)
 
         with self.queue_lock:
+            ### add id_task and reload model
+            shared.state.begin()
+            progress.start_task(id_task) # 开始记录id       
+            print("---------------------------更换模型",sd_model_checkpoint)
+            shared.opts.sd_model_checkpoint = sd_model_checkpoint
+            reload_model_weights(shared.sd_model)
+            print("-----------------模型切换完成")
+            ###
             with closing(StableDiffusionProcessingTxt2Img(sd_model=shared.sd_model, **args)) as p:
                 p.is_api = True
                 p.scripts = script_runner
@@ -382,11 +519,25 @@ class Api:
                     shared.state.end()
                     shared.total_tqdm.clear()
 
+        ### progress finish
+        progress.record_results(id_task,processed)
+        progress.finish_task(id_task)
+        shared.state.end()
+        ###
+        ###
+        save_img_in_outputs_directory("txt2img-images", processed.images, "save")
+        ###
         b64images = list(map(encode_pil_to_base64, processed.images)) if send_images else []
 
         return models.TextToImageResponse(images=b64images, parameters=vars(txt2imgreq), info=processed.js())
 
+    ### change img2imgapi logic
     def img2imgapi(self, img2imgreq: models.StableDiffusionImg2ImgProcessingAPI):
+        ### add progress
+        id_task = img2imgreq.id_task   #获取id_task
+        sd_model_checkpoint = img2imgreq.sd_model_checkpoint   # 获取模型名称        
+        progress.add_task_to_queue(id_task)   #添加id_task到任务列队
+        ###
         init_images = img2imgreq.init_images
         if init_images is None:
             raise HTTPException(status_code=404, detail="Init image not found")
@@ -424,6 +575,14 @@ class Api:
         args.pop('save_images', None)
 
         with self.queue_lock:
+            ### add id_task and reload model
+            shared.state.begin()
+            progress.start_task(id_task) # 开始记录id
+            print("---------------------------更换模型",sd_model_checkpoint)
+            shared.opts.sd_model_checkpoint = sd_model_checkpoint
+            reload_model_weights(shared.sd_model)
+            print("-----------------模型切换完成")
+            ###
             with closing(StableDiffusionProcessingImg2Img(sd_model=shared.sd_model, **args)) as p:
                 p.init_images = [decode_base64_to_image(x) for x in init_images]
                 p.is_api = True
@@ -443,6 +602,14 @@ class Api:
                     shared.state.end()
                     shared.total_tqdm.clear()
 
+        ### progress finish
+        progress.record_results(id_task,processed)
+        progress.finish_task(id_task)
+        shared.state.end()
+        ###
+        ###
+        save_img_in_outputs_directory("img2img-images", processed.images, "save")
+        ###
         b64images = list(map(encode_pil_to_base64, processed.images)) if send_images else []
 
         if not img2imgreq.include_init_images:
@@ -488,33 +655,38 @@ class Api:
 
         return models.PNGInfoResponse(info=geninfo, items=items)
 
-    def progressapi(self, req: models.ProgressRequest = Depends()):
-        # copy from check_progress_call of ui.py
+    ### change progressapi logic
+    # def progressapi(self, req: models.ProgressRequest = Depends()):
+    def progressapi(self, req: models.ProgressRequest):
+        from modules.progress import progressapi as progress
+        info = progress(req)
+        return info
+        # # copy from check_progress_call of ui.py
 
-        if shared.state.job_count == 0:
-            return models.ProgressResponse(progress=0, eta_relative=0, state=shared.state.dict(), textinfo=shared.state.textinfo)
+        # if shared.state.job_count == 0:
+        #     return models.ProgressResponse(progress=0, eta_relative=0, state=shared.state.dict(), textinfo=shared.state.textinfo)
 
-        # avoid dividing zero
-        progress = 0.01
+        # # avoid dividing zero
+        # progress = 0.01
 
-        if shared.state.job_count > 0:
-            progress += shared.state.job_no / shared.state.job_count
-        if shared.state.sampling_steps > 0:
-            progress += 1 / shared.state.job_count * shared.state.sampling_step / shared.state.sampling_steps
+        # if shared.state.job_count > 0:
+        #     progress += shared.state.job_no / shared.state.job_count
+        # if shared.state.sampling_steps > 0:
+        #     progress += 1 / shared.state.job_count * shared.state.sampling_step / shared.state.sampling_steps
 
-        time_since_start = time.time() - shared.state.time_start
-        eta = (time_since_start/progress)
-        eta_relative = eta-time_since_start
+        # time_since_start = time.time() - shared.state.time_start
+        # eta = (time_since_start/progress)
+        # eta_relative = eta-time_since_start
 
-        progress = min(progress, 1)
+        # progress = min(progress, 1)
 
-        shared.state.set_current_image()
+        # shared.state.set_current_image()
 
-        current_image = None
-        if shared.state.current_image and not req.skip_current_image:
-            current_image = encode_pil_to_base64(shared.state.current_image)
+        # current_image = None
+        # if shared.state.current_image and not req.skip_current_image:
+        #     current_image = encode_pil_to_base64(shared.state.current_image)
 
-        return models.ProgressResponse(progress=progress, eta_relative=eta_relative, state=shared.state.dict(), current_image=current_image, textinfo=shared.state.textinfo)
+        # return models.ProgressResponse(progress=progress, eta_relative=eta_relative, state=shared.state.dict(), current_image=current_image, textinfo=shared.state.textinfo)
 
     def interrogateapi(self, interrogatereq: models.InterrogateRequest):
         image_b64 = interrogatereq.image
